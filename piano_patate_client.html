@@ -1,0 +1,801 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Piano Patate Série + Calibration</title>
+
+  <style>
+    /*
+      ============================
+      STYLE GLOBAL
+      ============================
+
+      Ici on définit des variables CSS pour éviter de répéter
+      les couleurs partout dans le code.
+    */
+    :root {
+      --bg: #0f1115;
+      --panel: #181c23;
+      --panel-2: #202631;
+      --text: #eef2f7;
+      --muted: #9fb0c7;
+      --accent: #4f8cff;
+      --ok: #36b36b;
+      --warn: #d9841f;
+      --border: #313949;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: Inter, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+
+    .wrap {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 20px;
+    }
+
+    h1 { margin: 0 0 8px; }
+    p { color: var(--muted); }
+
+    /*
+      Barre de boutons et d'états.
+    */
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin: 18px 0;
+      align-items: center;
+    }
+
+    button {
+      border: 0;
+      border-radius: 12px;
+      padding: 12px 16px;
+      font-size: 15px;
+      cursor: pointer;
+      background: var(--accent);
+      color: white;
+    }
+
+    button.secondary { background: var(--panel-2); }
+    button.warn { background: #c57916; }
+    button:disabled { opacity: 0.55; cursor: not-allowed; }
+
+    /*
+      Les "pills" sont les pastilles d'état :
+      série connectée, audio actif, calibration en cours, etc.
+    */
+    .pill {
+      display: inline-block;
+      padding: 8px 12px;
+      border-radius: 999px;
+      background: var(--panel-2);
+      color: var(--muted);
+      border: 1px solid var(--border);
+      font-size: 14px;
+    }
+
+    .pill.ok {
+      color: #dff8e7;
+      background: #183325;
+      border-color: #2d7a4d;
+    }
+
+    .pill.warn {
+      color: #ffe8c5;
+      background: #3a2a12;
+      border-color: #8a5a16;
+    }
+
+    /*
+      Mise en page principale :
+      - à gauche : les touches
+      - à droite : les logs et infos
+    */
+    .layout {
+      display: grid;
+      grid-template-columns: 2fr 1fr;
+      gap: 16px;
+    }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 16px;
+    }
+
+    /*
+      Grille des 8 touches virtuelles affichées dans la page.
+    */
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 12px;
+    }
+
+    .card {
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 14px;
+      transition: 120ms ease;
+    }
+
+    /*
+      Quand une touche est active, on la colore en vert.
+    */
+    .card.active {
+      background: #183325;
+      border-color: #37a45f;
+      transform: translateY(-1px);
+    }
+
+    .note { font-size: 26px; font-weight: 700; }
+    .freq { color: var(--muted); margin-top: 4px; }
+    .state { margin-top: 10px; font-weight: 700; color: var(--muted); }
+    .card.active .state { color: #8ff0b3; }
+
+    .meta {
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    /*
+      Zone de log série.
+    */
+    .log {
+      background: #0c0f14;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 12px;
+      min-height: 320px;
+      max-height: 480px;
+      overflow: auto;
+      white-space: pre-wrap;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 13px;
+      color: #cdd8e7;
+    }
+
+    .hint { font-size: 14px; color: var(--muted); }
+
+    @media (max-width: 860px) {
+      .layout { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Piano patate série + calibration</h1>
+
+    <p>
+      Cette page HTML tourne sur le PC.
+      Elle fait trois choses principales :
+      1) lire le port série de l'ESP32,
+      2) envoyer des commandes à l'ESP32,
+      3) générer les notes audio dans le navigateur.
+    </p>
+
+    <div class="toolbar">
+      <button id="connectBtn">Connecter le port série</button>
+      <button id="audioBtn" class="secondary">Activer l'audio</button>
+      <button id="recalBtn" class="warn" disabled>Recalibrer 5 s</button>
+      <button id="disconnectBtn" class="secondary" disabled>Fermer le port</button>
+
+      <span id="serialState" class="pill">Série déconnectée</span>
+      <span id="audioState" class="pill">Audio inactif</span>
+      <span id="calState" class="pill">Calibration inconnue</span>
+    </div>
+
+    <div class="layout">
+      <div class="panel">
+        <!-- Les cartes des 8 touches seront générées en JavaScript -->
+        <div class="grid" id="keys"></div>
+      </div>
+
+      <div class="panel">
+        <div class="hint">Commande envoyée vers l'ESP32 :</div>
+        <div class="hint">- <code>CALIBRATE</code></div>
+        <br>
+
+        <div class="hint">Messages série compris :</div>
+        <div class="hint">- TOUCHE 0 / RELACHE 0</div>
+        <div class="hint">- CALIBRATION_START / CALIBRATION_DONE</div>
+        <div class="hint">- CAL n GPIO x BASE y LOW z HIGH h</div>
+        <br>
+
+        <!-- Ici on affiche les lignes reçues sur le port série -->
+        <div class="log" id="log"></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    /*
+      ============================
+      1) Définition des notes
+      ============================
+
+      Chaque touche a :
+      - un nom affiché
+      - une fréquence utilisée pour le synthé
+    */
+    const notes = [
+      { name: 'Do',  freq: 261.63 },
+      { name: 'Ré',  freq: 293.66 },
+      { name: 'Mi',  freq: 329.63 },
+      { name: 'Fa',  freq: 349.23 },
+      { name: 'Sol', freq: 392.00 },
+      { name: 'La',  freq: 440.00 },
+      { name: 'Si',  freq: 493.88 },
+      { name: 'Do+', freq: 523.25 }
+    ];
+
+    /*
+      touchMeta contient les informations de calibration
+      pour chaque touche, envoyées par l'ESP32.
+    */
+    const touchMeta = notes.map(() => ({
+      gpio: '-',
+      base: '-',
+      low: '-',
+      high: '-'
+    }));
+
+    /*
+      keyStates contient l'état logique de chaque touche.
+      true  = appuyée
+      false = relâchée
+    */
+    const keyStates = new Array(8).fill(false);
+
+    /*
+      Variables liées au port série.
+      - port   : objet représentant le port
+      - reader : lecteur du flux entrant
+      - writer : écrivain du flux sortant
+    */
+    let port = null;
+    let reader = null;
+    let writer = null;
+    let keepReading = false;
+    let isCalibrating = false;
+
+    /*
+      Variables liées à l'audio Web Audio API.
+    */
+    let audioCtx = null;
+    let masterGain = null;
+    let startedAudio = false;
+    const synthVoices = [];
+
+    /*
+      Récupération des éléments du DOM.
+      Cela évite de refaire document.getElementById(...)
+      partout dans le code.
+    */
+    const keysEl = document.getElementById('keys');
+    const logEl = document.getElementById('log');
+    const connectBtn = document.getElementById('connectBtn');
+    const disconnectBtn = document.getElementById('disconnectBtn');
+    const audioBtn = document.getElementById('audioBtn');
+    const recalBtn = document.getElementById('recalBtn');
+    const serialState = document.getElementById('serialState');
+    const audioState = document.getElementById('audioState');
+    const calState = document.getElementById('calState');
+
+    /*
+      ============================
+      2) Mise à jour de l'état de calibration dans l'interface
+      ============================
+
+      Cette fonction met à jour :
+      - le texte de la pastille
+      - sa couleur
+      - l'état du bouton de recalibration
+    */
+    function updateCalState() {
+      calState.textContent = isCalibrating ? 'Calibration en cours' : 'Calibration prête';
+      calState.className = isCalibrating ? 'pill warn' : 'pill ok';
+
+      // On ne peut recalibrer que si le port est ouvert et si une calibration n'est pas déjà en cours.
+      recalBtn.disabled = !port || isCalibrating;
+
+      /*
+        Si on est en calibration,
+        on force visuellement toutes les touches à "relâchées".
+      */
+      if (isCalibrating) {
+        keyStates.fill(false);
+        renderKeys();
+      }
+    }
+
+    /*
+      ============================
+      3) Ajout d'une ligne dans le log
+      ============================
+
+      On préfixe chaque message avec l'heure locale du PC.
+    */
+    function addLog(line) {
+      const ts = new Date().toLocaleTimeString();
+      logEl.textContent += `[${ts}] ${line}\n`;
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    /*
+      ============================
+      4) Affichage des 8 cartes/touches
+      ============================
+
+      A chaque appel, on reconstruit entièrement la grille.
+      Ce n'est pas la méthode la plus optimisée du monde,
+      mais pour 8 touches c'est très simple et parfaitement suffisant.
+    */
+    function renderKeys() {
+      keysEl.innerHTML = '';
+
+      notes.forEach((n, i) => {
+        const card = document.createElement('div');
+        card.className = 'card' + (keyStates[i] ? ' active' : '');
+
+        const m = touchMeta[i];
+
+        card.innerHTML = `
+          <div class="note">${n.name}</div>
+          <div class="freq">${n.freq.toFixed(2)} Hz</div>
+          <div class="state">${keyStates[i] ? 'Appuyée' : 'Relâchée'}</div>
+          <div class="meta">GPIO: ${m.gpio}</div>
+          <div class="meta">Base: ${m.base}</div>
+          <div class="meta">Low: ${m.low}</div>
+          <div class="meta">High: ${m.high}</div>
+        `;
+
+        keysEl.appendChild(card);
+      });
+    }
+
+    /*
+      ============================
+      5) Création d'une voix audio
+      ============================
+
+      Une "voice" est le petit circuit audio associé à une note.
+
+      Ici chaque note est fabriquée avec :
+      - plusieurs oscillateurs harmoniques
+      - un filtre passe-bas
+      - un gain de sortie
+
+      Cela donne un timbre plus agréable qu'un simple sinus nu.
+    */
+    function createVoice(freq) {
+      // Gain de sortie de la note
+      const output = audioCtx.createGain();
+      output.gain.value = 0;
+
+      // Filtre passe-bas pour adoucir le timbre
+      const filter = audioCtx.createBiquadFilter();
+      filter.type = 'lowpass';
+      filter.frequency.value = 2800;
+      filter.Q.value = 0.7;
+
+      // Chaîne audio : output -> filter -> masterGain
+      output.connect(filter);
+      filter.connect(masterGain);
+
+      /*
+        Chaque harmonique ajoute un peu de richesse au son.
+        mul = multiplicateur de fréquence
+        gain = intensité relative
+        type = forme d'onde
+      */
+      const harmonics = [
+        { mul: 1.0, gain: 0.60, type: 'sine' },
+        { mul: 2.0, gain: 0.18, type: 'sine' },
+        { mul: 3.0, gain: 0.10, type: 'sine' },
+        { mul: 4.0, gain: 0.06, type: 'triangle' }
+      ];
+
+      /*
+        On crée réellement les oscillateurs.
+        Chaque oscillateur va vers un petit gain individuel,
+        puis vers le gain de sortie commun de la note.
+      */
+      const parts = harmonics.map(h => {
+        const osc = audioCtx.createOscillator();
+        const g = audioCtx.createGain();
+
+        osc.type = h.type;
+        osc.frequency.value = freq * h.mul;
+        g.gain.value = h.gain;
+
+        osc.connect(g);
+        g.connect(output);
+
+        // Les oscillateurs démarrent immédiatement, mais leur volume est à 0.
+        osc.start();
+
+        return { osc, gain: g };
+      });
+
+      return { output, filter, parts };
+    }
+
+    /*
+      ============================
+      6) Initialisation audio globale
+      ============================
+
+      Ici on crée :
+      - l'AudioContext
+      - le gain maître
+      - les 8 voix
+    */
+    function setupAudio() {
+      if (startedAudio) return;
+
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+      masterGain = audioCtx.createGain();
+      masterGain.gain.value = 0.35;
+      masterGain.connect(audioCtx.destination);
+
+      notes.forEach(n => synthVoices.push(createVoice(n.freq)));
+
+      startedAudio = true;
+      audioState.textContent = 'Audio actif';
+      audioState.className = 'pill ok';
+    }
+
+    /*
+      Le navigateur exige en général une action utilisateur
+      avant d'autoriser le son.
+      C'est pour ça qu'on a un bouton "Activer l'audio".
+    */
+    async function enableAudio() {
+      setupAudio();
+
+      if (audioCtx && audioCtx.state === 'suspended') {
+        await audioCtx.resume();
+      }
+
+      audioState.textContent = 'Audio actif';
+      audioState.className = 'pill ok';
+      addLog('Audio activé');
+    }
+
+    /*
+      ============================
+      7) Déclenchement des notes
+      ============================
+
+      noteOn() et noteOff() ne créent pas/détruisent pas les oscillateurs.
+      Ils modifient juste le volume de la voix avec une enveloppe.
+      Cela évite les clics et rend le système plus réactif [web:139][web:151].
+    */
+    function noteOn(index) {
+      if (!startedAudio || isCalibrating) return;
+
+      const v = synthVoices[index];
+      const now = audioCtx.currentTime;
+
+      v.output.gain.cancelScheduledValues(now);
+      v.output.gain.setValueAtTime(Math.max(v.output.gain.value, 0.0001), now);
+
+      // Attaque rapide, puis légère décroissance
+      v.output.gain.exponentialRampToValueAtTime(0.42, now + 0.015);
+      v.output.gain.exponentialRampToValueAtTime(0.22, now + 0.14);
+    }
+
+    function noteOff(index) {
+      if (!startedAudio) return;
+
+      const v = synthVoices[index];
+      const now = audioCtx.currentTime;
+
+      v.output.gain.cancelScheduledValues(now);
+      v.output.gain.setValueAtTime(Math.max(v.output.gain.value, 0.0001), now);
+
+      // Relâchement rapide
+      v.output.gain.exponentialRampToValueAtTime(0.0001, now + 0.08);
+    }
+
+    /*
+      setKey() met à jour :
+      - l'état logique dans keyStates
+      - l'affichage HTML
+      - le son correspondant
+    */
+    function setKey(index, on) {
+      if (index < 0 || index >= notes.length) return;
+      if (keyStates[index] === on) return;
+
+      keyStates[index] = on;
+      renderKeys();
+
+      if (on) noteOn(index);
+      else noteOff(index);
+    }
+
+    /*
+      ============================
+      8) Décodage d'une ligne de calibration
+      ============================
+
+      Exemple attendu :
+      CAL 0 GPIO 4 BASE 52 LOW 42 HIGH 48
+
+      Cette fonction remplit touchMeta[] pour affichage.
+    */
+    function parseCalibrationLine(s) {
+      const m = s.match(/^CAL\s+(\d+)\s+GPIO\s+(\d+)\s+BASE\s+(\d+)\s+LOW\s+(\d+)\s+HIGH\s+(\d+)$/i);
+      if (!m) return false;
+
+      const idx = parseInt(m[1], 10);
+
+      if (idx >= 0 && idx < touchMeta.length) {
+        touchMeta[idx] = {
+          gpio: m[2],
+          base: m[3],
+          low: m[4],
+          high: m[5]
+        };
+        renderKeys();
+      }
+
+      return true;
+    }
+
+    /*
+      ============================
+      9) Décodage d'une ligne série
+      ============================
+
+      C'est le cœur de la communication PC <- ESP32.
+
+      Chaque ligne reçue est analysée pour savoir si c'est :
+      - un début de calibration
+      - une fin de calibration
+      - une ligne de paramètres CAL ...
+      - un événement TOUCHE / RELACHE
+    */
+    function parseLine(line) {
+      const s = line.trim();
+      if (!s) return;
+
+      addLog(s);
+
+      if (s === 'CALIBRATION_START') {
+        isCalibrating = true;
+        keyStates.fill(false);
+        updateCalState();
+        renderKeys();
+        return;
+      }
+
+      if (s === 'CALIBRATION_DONE') {
+        isCalibrating = false;
+        updateCalState();
+        return;
+      }
+
+      if (parseCalibrationLine(s)) return;
+
+      let m;
+
+      m = s.match(/^TOUCHE\s+(\d+)/i);
+      if (m) {
+        setKey(parseInt(m[1], 10), true);
+        return;
+      }
+
+      m = s.match(/^RELACHE\s+(\d+)/i);
+      if (m) {
+        setKey(parseInt(m[1], 10), false);
+        return;
+      }
+    }
+
+    /*
+      ============================
+      10) Écriture sur le port série
+      ============================
+
+      La Web Serial API expose :
+      - port.readable pour lire
+      - port.writable pour écrire [web:116][web:153]
+
+      Ici on écrit une chaîne texte vers l'ESP32.
+    */
+    async function writeSerial(text) {
+      if (!port || !port.writable) return;
+
+      try {
+        writer = port.writable.getWriter();
+        const enc = new TextEncoder();
+        await writer.write(enc.encode(text));
+      } finally {
+        if (writer) {
+          writer.releaseLock();
+          writer = null;
+        }
+      }
+    }
+
+    /*
+      Quand l'utilisateur clique sur "Recalibrer 5 s",
+      on envoie simplement la commande texte "CALIBRATE\n".
+    */
+    async function triggerCalibration() {
+      if (!port || isCalibrating) return;
+      addLog('Envoi commande CALIBRATE');
+      await writeSerial('CALIBRATE\n');
+    }
+
+    /*
+      ============================
+      11) Connexion au port série
+      ============================
+
+      navigator.serial.requestPort() ouvre la boîte de dialogue
+      du navigateur pour choisir un port série [web:113][web:116].
+    */
+    async function connectSerial() {
+      if (!('serial' in navigator)) {
+        addLog('Web Serial non disponible dans ce navigateur');
+        alert('Web Serial non disponible. Utilise Chrome ou Edge.');
+        return;
+      }
+
+      try {
+        port = await navigator.serial.requestPort();
+        await port.open({ baudRate: 115200 });
+
+        keepReading = true;
+
+        serialState.textContent = 'Série connectée @115200';
+        serialState.className = 'pill ok';
+
+        connectBtn.disabled = true;
+        disconnectBtn.disabled = false;
+        recalBtn.disabled = false;
+
+        updateCalState();
+
+        addLog('Port série ouvert à 115200 bauds');
+
+        // Lance la boucle de lecture en arrière-plan
+        readLoop();
+      } catch (err) {
+        addLog('Erreur ouverture port: ' + err.message);
+      }
+    }
+
+    /*
+      ============================
+      12) Déconnexion du port série
+      ============================
+
+      On arrête d'abord la lecture,
+      puis on ferme proprement le port.
+    */
+    async function disconnectSerial() {
+      keepReading = false;
+
+      try {
+        if (reader) {
+          await reader.cancel();
+          reader.releaseLock();
+          reader = null;
+        }
+      } catch (_) {}
+
+      try {
+        if (port) {
+          await port.close();
+          port = null;
+        }
+      } catch (_) {}
+
+      keyStates.fill(false);
+      isCalibrating = false;
+      renderKeys();
+      updateCalState();
+
+      serialState.textContent = 'Série déconnectée';
+      serialState.className = 'pill';
+
+      connectBtn.disabled = false;
+      disconnectBtn.disabled = true;
+      recalBtn.disabled = true;
+
+      addLog('Port série fermé');
+    }
+
+    /*
+      ============================
+      13) Boucle de lecture série
+      ============================
+
+      Le port série fournit des paquets de bytes.
+      Ici on :
+      - décode en texte avec TextDecoder
+      - accumule dans un buffer
+      - découpe ligne par ligne avec \n ou \r\n
+      - appelle parseLine() pour chaque ligne complète
+
+      C'est l'équivalent navigateur du parsing ligne par ligne
+      qu'on fait côté ESP32 [web:116][web:122].
+    */
+    async function readLoop() {
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (port && port.readable && keepReading) {
+        try {
+          reader = port.readable.getReader();
+
+          while (keepReading) {
+            const { value, done } = await reader.read();
+            if (done) break;
+
+            if (value) {
+              buffer += decoder.decode(value, { stream: true });
+
+              const lines = buffer.split(/\r?\n/);
+              buffer = lines.pop();
+
+              for (const line of lines) {
+                parseLine(line);
+              }
+            }
+          }
+        } catch (err) {
+          addLog('Erreur lecture: ' + err.message);
+          break;
+        } finally {
+          if (reader) {
+            reader.releaseLock();
+            reader = null;
+          }
+        }
+      }
+
+      if (port && keepReading) {
+        await disconnectSerial();
+      }
+    }
+
+    /*
+      ============================
+      14) Association des boutons à leurs fonctions
+      ============================
+    */
+    connectBtn.addEventListener('click', connectSerial);
+    disconnectBtn.addEventListener('click', disconnectSerial);
+    audioBtn.addEventListener('click', enableAudio);
+    recalBtn.addEventListener('click', triggerCalibration);
+
+    /*
+      ============================
+      15) Initialisation visuelle au chargement de la page
+      ============================
+    */
+    updateCalState();
+    renderKeys();
+  </script>
+</body>
+</html>
